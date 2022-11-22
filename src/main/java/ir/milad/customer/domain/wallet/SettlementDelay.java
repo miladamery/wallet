@@ -15,6 +15,11 @@ public enum SettlementDelay {
         }
 
         @Override
+        public List<SettlementDelay> lessThanAndEqual() {
+            return List.of(T_PLUS_0);
+        }
+
+        @Override
         public Lender asLender() {
             return Lender.of(this);
         }
@@ -33,6 +38,11 @@ public enum SettlementDelay {
         @Override
         public List<SettlementDelay> lessThan() {
             return List.of(T_PLUS_0);
+        }
+
+        @Override
+        public List<SettlementDelay> lessThanAndEqual() {
+            return List.of(T_PLUS_0, T_PLUS_1);
         }
 
         @Override
@@ -57,6 +67,11 @@ public enum SettlementDelay {
         }
 
         @Override
+        public List<SettlementDelay> lessThanAndEqual() {
+            return List.of(T_PLUS_0, T_PLUS_1, T_PLUS_2);
+        }
+
+        @Override
         public Lender asLender() {
             return Lender.of(this);
         }
@@ -78,6 +93,11 @@ public enum SettlementDelay {
         }
 
         @Override
+        public List<SettlementDelay> lessThanAndEqual() {
+            return List.of(T_PLUS_0, T_PLUS_1, T_PLUS_2, T_PLUS_3 );
+        }
+
+        @Override
         public Lender asLender() {
             return Lender.of(this);
         }
@@ -91,7 +111,9 @@ public enum SettlementDelay {
     public abstract List<SettlementDelay> EqualAndLess();
 
     public abstract List<SettlementDelay> lessThan();
-    
+
+    public abstract List<SettlementDelay> lessThanAndEqual();
+
     public abstract Lender asLender();
     
     public abstract Borrower asBorrower();

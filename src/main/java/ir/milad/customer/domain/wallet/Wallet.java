@@ -3,33 +3,32 @@ package ir.milad.customer.domain.wallet;
 import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.Table;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class Wallet {
     private final Map<SettlementDelay, InternalWallet> delayWallets;
-
     private final Table<Lender, Borrower, Money> higherWalletsToLowerWalletsDebt;
 
     public Wallet() {
         higherWalletsToLowerWalletsDebt = HashBasedTable.create(4, 4);
-        delayWallets = new LinkedHashMap<>(4);
-        delayWallets.put(SettlementDelay.T_PLUS_0, new InternalWallet());
-        delayWallets.put(SettlementDelay.T_PLUS_1, new InternalWallet());
-        delayWallets.put(SettlementDelay.T_PLUS_2, new InternalWallet());
-        delayWallets.put(SettlementDelay.T_PLUS_3, new InternalWallet());
+        delayWallets = Map.of(
+                SettlementDelay.T_PLUS_0, new InternalWallet(),
+                SettlementDelay.T_PLUS_1, new InternalWallet(),
+                SettlementDelay.T_PLUS_2, new InternalWallet(),
+                SettlementDelay.T_PLUS_3, new InternalWallet()
+        );
     }
 
-    public void block(Money toBlock, SettlementDelay delay) {
-        throwIfNotEnoughBuyingPower(toBlock, delay);
+    public void block(Money toBlock, SettlementDelay highestDelay) {
+        throwIfNotEnoughBuyingPower(toBlock, highestDelay);
 
-        for (SettlementDelay d : delay.EqualAndLess()) {
-            if (internalWalletHasEnoughBuyingPower(d, toBlock))
-                blockFromInternalWalletWithDebtTracking(d.asLender(), delay.asBorrower(), toBlock);
-            else if (internalWalletBuyingPowerIsNotZero(d)) {
-                var amount = Money.of(delayWallets.get(d).buyingPower().value());
+        for (SettlementDelay delay : highestDelay.EqualAndLess()) {
+            if (internalWalletHasEnoughBuyingPower(delay, toBlock))
+                blockFromInternalWalletWithDebtTracking(delay.asLender(), highestDelay.asBorrower(), toBlock);
+            else if (internalWalletBuyingPowerIsNotZero(delay)) {
+                var amount = Money.of(delayWallets.get(delay).buyingPower().value());
                 toBlock = toBlock.minus(amount);
-                blockFromInternalWalletWithDebtTracking(d.asLender(), delay.asBorrower(), amount);
+                blockFromInternalWalletWithDebtTracking(delay.asLender(), highestDelay.asBorrower(), amount);
             }
         }
     }
@@ -39,18 +38,17 @@ public class Wallet {
     }
 
     public void deposit(Money money, SettlementDelay delay) {
-        for (SettlementDelay d : delay.lessThan()) {
-            var debt = higherWalletsToLowerWalletsDebt.get(d.asLender(), delay.asBorrower());
-            if (debt != null && debt != Money.ZERO)
-                if (debt.isGreaterThanOrEqual(money)) {
-                    higherWalletsToLowerWalletsDebt.put(d.asLender(), delay.asBorrower(), debt.minus(money));
-                    delayWallets.get(d).deposit(money);
-                    money = Money.ZERO;
-                    break;
-                } else {
-                    deposit(debt, d);
-                    money = money.minus(debt);
-                }
+        for (SettlementDelay lender : delay.lessThan()) {
+            var debt = debtToLender(delay, lender);
+            if (debt.isGreaterThanOrEqual(money)) {
+                // Debt functionality: reducing debt
+                higherWalletsToLowerWalletsDebt.put(lender.asLender(), delay.asBorrower(), debt.minus(money));
+                delayWallets.get(lender).deposit(money);
+                money = Money.ZERO;
+            } else if (debt.isNotZero()) {
+                deposit(debt, lender);
+                money = money.minus(debt);
+            }
         }
         delayWallets.get(delay).deposit(money);
     }
@@ -59,49 +57,46 @@ public class Wallet {
     }
 
     public void spend(Money toSpend, SettlementDelay delay) {
-        var blocked = Money.of(delayWallets.get(delay).getBlocked().value());
-        throwIfToSpendIsMoreThanWalletBlockCapability(toSpend, delay, blocked);
+        throwIfToSpendIsMoreThanWalletBlockedMoney(toSpend, delay);
 
-        if (toSpend.isGreaterThan(blocked)) {
-            delayWallets.get(delay).spend(blocked);
-            toSpend = toSpend.minus(blocked);
-        } else {
+        var blocked = Money.of(delayWallets.get(delay).getBlocked().value());
+        if (toSpend.isLowerThanOrEqual(blocked)) {
             delayWallets.get(delay).spend(toSpend);
             return;
         }
 
-        for (SettlementDelay d: delay.lessThan().reverse()) {
-            var debt = higherWalletsToLowerWalletsDebt.get(d.asLender(), delay.asBorrower());
-            if (debt != null && debt != Money.ZERO)
-                if (debt.isGreaterThan(toSpend)) {
-                    delayWallets.get(d).spend(toSpend);
-                    higherWalletsToLowerWalletsDebt.put(d.asLender(), delay.asBorrower(), debt.minus(toSpend));
-                    break;
-                } else {
-                    delayWallets.get(d).spend(debt);
-                    higherWalletsToLowerWalletsDebt.put(d.asLender(), delay.asBorrower(), Money.ZERO);
-                    toSpend = toSpend.minus(debt);
-                }
+        delayWallets.get(delay).spend(blocked);
+        toSpend = toSpend.minus(blocked);
+
+        for (SettlementDelay lender : delay.lessThan().reverse()) {
+            var debt = debtToLender(delay, lender);
+            if (debt.isGreaterThan(toSpend)) {
+                // Debt functionality: reducing debt
+                higherWalletsToLowerWalletsDebt.put(lender.asLender(), delay.asBorrower(), debt.minus(toSpend));
+                delayWallets.get(lender).spend(toSpend);
+            } else if (debt.isNotZero()) {
+                // Debt functionality: clearing debt
+                higherWalletsToLowerWalletsDebt.put(lender.asLender(), delay.asBorrower(), Money.ZERO);
+                delayWallets.get(lender).spend(debt);
+                toSpend = toSpend.minus(debt);
+            }
         }
     }
 
     public void unblock(Money toUnblock, SettlementDelay delay) {
-        for (SettlementDelay d : delay.lessThan()) {
-            var debt = higherWalletsToLowerWalletsDebt.get(d.asLender(), delay.asBorrower());
-            if (debt != null && debt != Money.ZERO)
-                if (debt.isGreaterThan(toUnblock)) {
-                    delayWallets.get(d).unblock(toUnblock);
-                    higherWalletsToLowerWalletsDebt.put(d.asLender(), delay.asBorrower(), debt.minus(toUnblock));
-                    toUnblock = Money.ZERO;
-                    break;
-                } else {
-                    unblock(debt, d);
-                    toUnblock = toUnblock.minus(debt);
-                }
+        for (SettlementDelay lender : delay.lessThan()) {
+            var debt = debtToLender(delay, lender);
+            if (debt.isGreaterThan(toUnblock)) {
+                delayWallets.get(lender).unblock(toUnblock);
+                higherWalletsToLowerWalletsDebt.put(lender.asLender(), delay.asBorrower(), debt.minus(toUnblock));
+                toUnblock = Money.ZERO;
+            } else if (debt.isNotZero()) {
+                unblock(debt, lender);
+                toUnblock = toUnblock.minus(debt);
+            }
         }
 
-        if (toUnblock != Money.ZERO)
-            delayWallets.get(delay).unblock(toUnblock);
+        delayWallets.get(delay).unblock(toUnblock);
     }
 
     public Money buyingPower(SettlementDelay delay) {
@@ -127,9 +122,11 @@ public class Wallet {
     private void blockFromInternalWalletWithDebtTracking(Lender lender, Borrower borrower, Money debt) {
         delayWallets.get(lender.value()).block(debt);
         if (borrower.value() != lender.value()) {
+            // Debt functionality: getting debt
             var previousDebt = higherWalletsToLowerWalletsDebt.get(lender, borrower);
             if (previousDebt == null)
                 previousDebt = Money.ZERO;
+            // Debt functionality: increasing debt
             higherWalletsToLowerWalletsDebt.put(lender, borrower, previousDebt.plus(debt));
         }
     }
@@ -138,12 +135,21 @@ public class Wallet {
         return delayWallets.get(delay).buyingPower().isGreaterThan(Money.ZERO);
     }
 
-    private void throwIfToSpendIsMoreThanWalletBlockCapability(Money toSpend, SettlementDelay delay, Money blocked) {
+    private void throwIfToSpendIsMoreThanWalletBlockedMoney(Money toSpend, SettlementDelay delay) {
+        var blocked = Money.of(delayWallets.get(delay).getBlocked().value());
         var totalPossibleToSpend = delay
                 .lessThan()
                 .map(d -> higherWalletsToLowerWalletsDebt.get(d.asLender(), delay.asBorrower()))
                 .fold(blocked, (acc, money) -> acc.plus(money == null ? Money.ZERO : money));
         if (toSpend.isGreaterThan(totalPossibleToSpend))
             throw new InsufficientFundsException(String.format("Required %s for spending but have only %s", toSpend.value(), totalPossibleToSpend.value()));
+    }
+
+    private Money debtToLender(SettlementDelay walletDelay, SettlementDelay lender) {
+        // Debt functionality: reducing debt
+        var debt = higherWalletsToLowerWalletsDebt.get(lender.asLender(), walletDelay.asBorrower());
+        if (debt == null)
+            debt = Money.ZERO;
+        return debt;
     }
 }

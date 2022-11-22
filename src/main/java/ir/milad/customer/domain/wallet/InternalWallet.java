@@ -25,9 +25,6 @@ class InternalWallet {
     }
 
     public void withdraw(Money withdraw) {
-        if (cash.isLessThan(withdraw))
-            throw new InsufficientFundsException(String.format("Required %s for withdraw but had %s", withdraw.value(), cash.value()));
-
         cash = cash.minus(withdraw);
     }
 

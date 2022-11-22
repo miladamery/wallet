@@ -1,6 +1,6 @@
 package ir.milad.customer.domain.wallet;
 
-import lombok.*;
+import lombok.Value;
 import lombok.experimental.Accessors;
 
 @Accessors(fluent = true)
@@ -25,6 +25,14 @@ public class Money {
 
     public boolean isGreaterThanOrEqual(Money another) {
         return value >= another.value;
+    }
+
+    public boolean isLowerThanOrEqual(Money another) {
+        return value <= another.value;
+    }
+
+    public boolean isNotZero() {
+        return value != 0;
     }
 
     public Money minus(Money money) {
