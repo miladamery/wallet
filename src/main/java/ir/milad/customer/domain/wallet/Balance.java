@@ -16,13 +16,10 @@ public class Balance {
         return new Balance(value + money.value());
     }
 
-    public boolean isLowerThanOrEqual(Money money) {
-        return value <= money.value();
-    }
-
     public boolean isGreaterThan(Money money) {
         return value > money.value();
     }
+
     public boolean isLessThan(Money money) {
         return value < money.value();
     }

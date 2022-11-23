@@ -1,6 +1,5 @@
 package ir.milad.customer.domain.wallet;
 
-import com.google.common.collect.Table;
 import io.vavr.Tuple;
 import io.vavr.Tuple2;
 import org.junit.jupiter.api.BeforeEach;
@@ -142,16 +141,16 @@ class WalletTest {
 
                     var walletsAndDebts = getWalletPrivateFields();
                     Map<SettlementDelay, InternalWallet> delayWallets = walletsAndDebts._1;
-                    Table<Lender, Borrower, Money> higherWalletsToLowerWalletsDebt = walletsAndDebts._2;
+                    Wallet.DebtSupervisor debtSupervisor = walletsAndDebts._2;
 
                     assertThat(delayWallets.get(SettlementDelay.T_PLUS_0).getBlocked()).isEqualTo(new Balance(2_500_000L));
                     assertThat(delayWallets.get(SettlementDelay.T_PLUS_1).getBlocked()).isEqualTo(new Balance(0L));
                     assertThat(delayWallets.get(SettlementDelay.T_PLUS_2).getBlocked()).isEqualTo(new Balance(0L));
                     assertThat(
-                            higherWalletsToLowerWalletsDebt.get(SettlementDelay.T_PLUS_1.asLender(), SettlementDelay.T_PLUS_2.asBorrower())
+                            debtSupervisor.get(SettlementDelay.T_PLUS_1.asLender(), SettlementDelay.T_PLUS_2.asBorrower())
                     ).isEqualTo(Money.ZERO);
                     assertThat(
-                            higherWalletsToLowerWalletsDebt.get(SettlementDelay.T_PLUS_0.asLender(), SettlementDelay.T_PLUS_2.asBorrower())
+                            debtSupervisor.get(SettlementDelay.T_PLUS_0.asLender(), SettlementDelay.T_PLUS_2.asBorrower())
                     ).isEqualTo(Money.of(1_500_000L));
                 }
 
@@ -169,37 +168,37 @@ class WalletTest {
 
                     var walletsAndDebts = getWalletPrivateFields();
                     Map<SettlementDelay, InternalWallet> delayWallets = walletsAndDebts._1;
-                    Table<Lender, Borrower, Money> higherWalletsToLowerWalletsDebt = walletsAndDebts._2;
+                    Wallet.DebtSupervisor debtSupervisor = walletsAndDebts._2;
 
                     assertThat(delayWallets.get(SettlementDelay.T_PLUS_0).getBlocked()).isEqualTo(new Balance(2_100_000L));
                     assertThat(delayWallets.get(SettlementDelay.T_PLUS_1).getBlocked()).isEqualTo(new Balance(0L));
                     assertThat(delayWallets.get(SettlementDelay.T_PLUS_2).getBlocked()).isEqualTo(new Balance(1_000_000L));
                     assertThat(
-                            higherWalletsToLowerWalletsDebt.get(SettlementDelay.T_PLUS_0.asLender(), SettlementDelay.T_PLUS_1.asBorrower())
+                            debtSupervisor.get(SettlementDelay.T_PLUS_0.asLender(), SettlementDelay.T_PLUS_1.asBorrower())
                     ).isEqualTo(Money.of(100_000L));
                     assertThat(
-                            higherWalletsToLowerWalletsDebt.get(SettlementDelay.T_PLUS_0.asLender(), SettlementDelay.T_PLUS_2.asBorrower())
+                            debtSupervisor.get(SettlementDelay.T_PLUS_0.asLender(), SettlementDelay.T_PLUS_2.asBorrower())
                     ).isEqualTo(Money.of(2_000_000L));
                     assertThat(
-                            higherWalletsToLowerWalletsDebt.get(SettlementDelay.T_PLUS_1.asLender(), SettlementDelay.T_PLUS_2.asBorrower())
+                            debtSupervisor.get(SettlementDelay.T_PLUS_1.asLender(), SettlementDelay.T_PLUS_2.asBorrower())
                     ).isEqualTo(Money.of(100_000L));
                 }
 
-                private Tuple2<Map<SettlementDelay, InternalWallet>, Table<Lender, Borrower, Money>> getWalletPrivateFields() {
+                private Tuple2<Map<SettlementDelay, InternalWallet>, Wallet.DebtSupervisor> getWalletPrivateFields() {
                     Map<SettlementDelay, InternalWallet> delayWallets;
-                    Table<Lender, Borrower, Money> higherWalletsToLowerWalletsDebt;
+                    Wallet.DebtSupervisor debtSupervisor;
                     try {
                         Field delayWalletsField = wallet.getClass().getDeclaredField("delayWallets");
-                        Field higherWalletsToLowerWalletsDebtField = wallet.getClass().getDeclaredField("higherWalletsToLowerWalletsDebt");
+                        Field debtSupervisorField = wallet.getClass().getDeclaredField("debtSupervisor");
                         delayWalletsField.setAccessible(true);
-                        higherWalletsToLowerWalletsDebtField.setAccessible(true);
+                        debtSupervisorField.setAccessible(true);
                         delayWallets = (Map<SettlementDelay, InternalWallet>) delayWalletsField.get(wallet);
-                        higherWalletsToLowerWalletsDebt = (Table<Lender, Borrower, Money>) higherWalletsToLowerWalletsDebtField.get(wallet);
+                        debtSupervisor = (Wallet.DebtSupervisor) debtSupervisorField.get(wallet);
 
                     } catch (NoSuchFieldException | IllegalAccessException e) {
                         throw new RuntimeException(e);
                     }
-                    return Tuple.of(delayWallets, higherWalletsToLowerWalletsDebt);
+                    return Tuple.of(delayWallets, debtSupervisor);
                 }
             }
         }

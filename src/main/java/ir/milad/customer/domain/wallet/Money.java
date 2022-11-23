@@ -31,16 +31,8 @@ public class Money {
         return value <= another.value;
     }
 
-    public boolean isNotZero() {
-        return value != 0;
-    }
-
     public Money minus(Money money) {
         return new Money(value - money.value);
-    }
-
-    public Money minus(Long value) {
-        return new Money(this.value - value);
     }
 
     public Money plus(Money money) {

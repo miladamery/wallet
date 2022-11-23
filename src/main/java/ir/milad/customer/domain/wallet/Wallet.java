@@ -4,22 +4,25 @@ import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.Table;
 
 import java.util.Map;
+import java.util.Objects;
 
 public class Wallet {
     private final Map<SettlementDelay, InternalWallet> delayWallets;
-    private final Table<Lender, Borrower, Money> higherWalletsToLowerWalletsDebt;
+
+    private final DebtSupervisor debtSupervisor;
 
     public Wallet() {
-        higherWalletsToLowerWalletsDebt = HashBasedTable.create(4, 4);
         delayWallets = Map.of(
                 SettlementDelay.T_PLUS_0, new InternalWallet(),
                 SettlementDelay.T_PLUS_1, new InternalWallet(),
                 SettlementDelay.T_PLUS_2, new InternalWallet(),
                 SettlementDelay.T_PLUS_3, new InternalWallet()
         );
+        debtSupervisor = new DebtSupervisor();
     }
 
     public void block(Money toBlock, SettlementDelay highestDelay) {
+        Objects.requireNonNull(toBlock);
         throwIfNotEnoughBuyingPower(toBlock, highestDelay);
 
         for (SettlementDelay delay : highestDelay.EqualAndLess()) {
@@ -37,26 +40,43 @@ public class Wallet {
         delayWallets.get(SettlementDelay.T_PLUS_0).deposit(money);
     }
 
-    public void deposit(Money money, SettlementDelay delay) {
+    public void deposit(Money remaining, SettlementDelay delay) {
+        Objects.requireNonNull(remaining);
+        remaining = settleDepositBorrowerDebtsAndReturnRemaining(remaining, delay);
+        delayWallets.get(delay).deposit(remaining);
+    }
+
+    private Money settleDepositBorrowerDebtsAndReturnRemaining(Money money, SettlementDelay delay) {
         for (SettlementDelay lender : delay.lessThan()) {
-            var debt = debtToLender(delay, lender);
-            if (debt.isGreaterThanOrEqual(money)) {
-                // Debt functionality: reducing debt
-                higherWalletsToLowerWalletsDebt.put(lender.asLender(), delay.asBorrower(), debt.minus(money));
-                delayWallets.get(lender).deposit(money);
-                money = Money.ZERO;
-            } else if (debt.isNotZero()) {
-                deposit(debt, lender);
-                money = money.minus(debt);
-            }
+            Money _money = money;
+            money = borrowerToLenderPossibleDebt(delay, lender)
+                    .ifInDebt(debt -> {
+                        if (debt.isGreaterThanOrEqual(_money))
+                            return depositToLenderAndDecreaseBorrowerDebt(lender, delay, _money);
+                        depositAndClearDebt(delay, lender, debt);
+                        return _money.minus(debt);
+                    })
+                    .orElse(money);
         }
-        delayWallets.get(delay).deposit(money);
+        return money;
+    }
+
+    private void depositAndClearDebt(SettlementDelay delay, SettlementDelay lender, Money debt) {
+        debtSupervisor.clear(lender, delay);
+        deposit(debt, lender);
+    }
+
+    private Money depositToLenderAndDecreaseBorrowerDebt(SettlementDelay lender, SettlementDelay borrower, Money _money) {
+        debtSupervisor.decrease(lender, borrower, _money);
+        delayWallets.get(lender).deposit(_money);
+        return Money.ZERO;
     }
 
     public void withdraw(Money withdraw, SettlementDelay delay) {
     }
 
     public void spend(Money toSpend, SettlementDelay delay) {
+        Objects.requireNonNull(toSpend);
         throwIfToSpendIsMoreThanWalletBlockedMoney(toSpend, delay);
 
         var blocked = Money.of(delayWallets.get(delay).getBlocked().value());
@@ -68,35 +88,61 @@ public class Wallet {
         delayWallets.get(delay).spend(blocked);
         toSpend = toSpend.minus(blocked);
 
+        spendRemainingFromLowerWallets(toSpend, delay);
+    }
+
+    private void spendRemainingFromLowerWallets(Money remaining, SettlementDelay delay) {
         for (SettlementDelay lender : delay.lessThan().reverse()) {
-            var debt = debtToLender(delay, lender);
-            if (debt.isGreaterThan(toSpend)) {
-                // Debt functionality: reducing debt
-                higherWalletsToLowerWalletsDebt.put(lender.asLender(), delay.asBorrower(), debt.minus(toSpend));
-                delayWallets.get(lender).spend(toSpend);
-            } else if (debt.isNotZero()) {
-                // Debt functionality: clearing debt
-                higherWalletsToLowerWalletsDebt.put(lender.asLender(), delay.asBorrower(), Money.ZERO);
-                delayWallets.get(lender).spend(debt);
-                toSpend = toSpend.minus(debt);
-            }
+            Money _toSpend = remaining;
+            remaining = borrowerToLenderPossibleDebt(delay, lender)
+                    .ifInDebt(debt -> {
+                        if (debt.isGreaterThan(_toSpend))
+                            return spendFromLenderAndDecreaseBorrowerDebt(lender, delay, _toSpend);
+
+                        spendFromLenderAndClearBorrowerDebt(lender, delay, debt);
+                        return _toSpend.minus(debt);
+                    })
+                    .orElse(remaining);
         }
     }
 
-    public void unblock(Money toUnblock, SettlementDelay delay) {
-        for (SettlementDelay lender : delay.lessThan()) {
-            var debt = debtToLender(delay, lender);
-            if (debt.isGreaterThan(toUnblock)) {
-                delayWallets.get(lender).unblock(toUnblock);
-                higherWalletsToLowerWalletsDebt.put(lender.asLender(), delay.asBorrower(), debt.minus(toUnblock));
-                toUnblock = Money.ZERO;
-            } else if (debt.isNotZero()) {
-                unblock(debt, lender);
-                toUnblock = toUnblock.minus(debt);
-            }
-        }
+    private void spendFromLenderAndClearBorrowerDebt(SettlementDelay lender, SettlementDelay borrower, Money debt) {
+        debtSupervisor.clear(lender, borrower);
+        delayWallets.get(lender).spend(debt);
+    }
 
+    private Money spendFromLenderAndDecreaseBorrowerDebt(SettlementDelay lender, SettlementDelay borrower, Money _toSpend) {
+        debtSupervisor.decrease(lender, borrower, _toSpend);
+        delayWallets.get(lender).spend(_toSpend);
+        return Money.ZERO;
+    }
+
+    public void unblock(Money toUnblock, SettlementDelay delay) {
+        Objects.requireNonNull(toUnblock);
+        toUnblock = settleUnblockBorrowerDebtsAndReturnRemaining(toUnblock, delay);
         delayWallets.get(delay).unblock(toUnblock);
+    }
+
+    private Money settleUnblockBorrowerDebtsAndReturnRemaining(Money money, SettlementDelay delay) {
+        for (SettlementDelay lender : delay.lessThan()) {
+            Money _money = money;
+            money = borrowerToLenderPossibleDebt(delay, lender)
+                    .ifInDebt(debt -> {
+                        if (debt.isGreaterThan(_money))
+                            return unblockFromLenderAndDecreaseBorrowerDebt(lender, delay, _money);
+
+                        unblock(debt, lender);
+                        return _money.minus(debt);
+                    })
+                    .orElse(money);
+        }
+        return money;
+    }
+
+    private Money unblockFromLenderAndDecreaseBorrowerDebt(SettlementDelay lender, SettlementDelay borrower, Money _toUnblock) {
+        delayWallets.get(lender).unblock(_toUnblock);
+        debtSupervisor.decrease(lender, borrower, _toUnblock);
+        return Money.ZERO;
     }
 
     public Money buyingPower(SettlementDelay delay) {
@@ -121,14 +167,8 @@ public class Wallet {
 
     private void blockFromInternalWalletWithDebtTracking(Lender lender, Borrower borrower, Money debt) {
         delayWallets.get(lender.value()).block(debt);
-        if (borrower.value() != lender.value()) {
-            // Debt functionality: getting debt
-            var previousDebt = higherWalletsToLowerWalletsDebt.get(lender, borrower);
-            if (previousDebt == null)
-                previousDebt = Money.ZERO;
-            // Debt functionality: increasing debt
-            higherWalletsToLowerWalletsDebt.put(lender, borrower, previousDebt.plus(debt));
-        }
+        if (borrower.value() != lender.value())
+            debtSupervisor.increase(lender, borrower, debt);
     }
 
     private boolean internalWalletBuyingPowerIsNotZero(SettlementDelay delay) {
@@ -139,17 +179,46 @@ public class Wallet {
         var blocked = Money.of(delayWallets.get(delay).getBlocked().value());
         var totalPossibleToSpend = delay
                 .lessThan()
-                .map(d -> higherWalletsToLowerWalletsDebt.get(d.asLender(), delay.asBorrower()))
+                .map(d -> debtSupervisor.get(d.asLender(), delay.asBorrower()))
                 .fold(blocked, (acc, money) -> acc.plus(money == null ? Money.ZERO : money));
         if (toSpend.isGreaterThan(totalPossibleToSpend))
             throw new InsufficientFundsException(String.format("Required %s for spending but have only %s", toSpend.value(), totalPossibleToSpend.value()));
     }
 
-    private Money debtToLender(SettlementDelay walletDelay, SettlementDelay lender) {
-        // Debt functionality: reducing debt
-        var debt = higherWalletsToLowerWalletsDebt.get(lender.asLender(), walletDelay.asBorrower());
-        if (debt == null)
-            debt = Money.ZERO;
-        return debt;
+    private OptionalDebt borrowerToLenderPossibleDebt(SettlementDelay walletDelay, SettlementDelay lender) {
+        return new OptionalDebt(debtSupervisor.get(lender.asLender(), walletDelay.asBorrower()));
+    }
+
+    static class DebtSupervisor {
+        private final Table<Lender, Borrower, Money> higherWalletsToLowerWalletsDebt;
+
+
+        public DebtSupervisor() {
+            higherWalletsToLowerWalletsDebt = HashBasedTable.create(4, 4);
+        }
+
+        public void increase(Lender lender, Borrower borrower, Money amount) {
+            higherWalletsToLowerWalletsDebt.put(lender, borrower, get(lender, borrower).plus(amount));
+        }
+
+        public void clear(SettlementDelay lender, SettlementDelay borrower) {
+            higherWalletsToLowerWalletsDebt.put(lender.asLender(), borrower.asBorrower(), Money.ZERO);
+        }
+
+        public void decrease(SettlementDelay lender, SettlementDelay borrower, Money amount) {
+            // TODO: 11/23/2022 Can check if amount is not greater than debt
+            higherWalletsToLowerWalletsDebt.put(
+                    lender.asLender(),
+                    borrower.asBorrower(),
+                    get(lender.asLender(), borrower.asBorrower()).minus(amount)
+            );
+        }
+
+        public Money get(Lender lender, Borrower borrower) {
+            var debt = higherWalletsToLowerWalletsDebt.get(lender, borrower);
+            if (debt == null)
+                debt = Money.ZERO;
+            return debt;
+        }
     }
 }
